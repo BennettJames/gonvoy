@@ -193,8 +193,8 @@ func execEnvoy(
 			WaitingFor: wait.ForExit(),
 
 			// Cmd: []string{"envoy", "--mode", "validate", "--config-path", "/tmp/config.json"},
-			// Cmd: []string{"bash", "-c",	"envoy --mode validate --config-path /tmp/config.json"},
-			Cmd: []string{"bash", "-c", "cat /tmp/config.json"},
+			Cmd: []string{"bash", "-c", "envoy --mode validate --config-path /tmp/config.json"},
+			// Cmd: []string{"bash", "-c", "cat /tmp/config.json"},
 		},
 		Started: true,
 	})
