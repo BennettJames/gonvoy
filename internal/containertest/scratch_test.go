@@ -252,5 +252,8 @@ func createTmpConfig(content string) (file *os.File, err error) {
 	if err := tmpFile.Sync(); err != nil {
 		return nil, fmt.Errorf("Failed to write config to file: %w", err)
 	}
+	if err := os.Chmod(tmpFile.Name(), 0666); err != nil {
+		return nil, fmt.Errorf("Failed to write config to file: %w", err)
+	}
 	return tmpFile, nil
 }
