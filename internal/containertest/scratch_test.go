@@ -37,25 +37,131 @@ func TestEnvoyConfig(t *testing.T) {
 	})
 }
 
+func TestEnvoyConfigMultiVersion(t *testing.T) {
+	ctx := context.Background()
+
+	versions := []string{
+		"v1.24.0",
+		"v1.23.2",
+		"v1.22.5",
+		"v1.21.5",
+	}
+
+	// note [bs]: yeah, I'm not thrilled by the ergonomics here, but I think it'll
+	// do for what I'm doing. Let's try to get the specific issue replicated, then
+	// I can return to questions of overall flow.
+
+	t.Run("EmptyConfig", func(t *testing.T) {
+		config := `
+		{}
+		`
+		testEnvoyConfig(ctx, t, config, versions)
+
+	})
+
+	// "google_re2": {},
+
+	t.Run("Regex", func(t *testing.T) {
+		// RegexMatcher
+
+		config := `
+		{
+			"admin": {
+				"address": {
+					"socket_address": {
+						"address": "127.0.0.1",
+						"port_value": 9901
+					}
+				}
+			},
+			"static_resources": {
+				"listeners": {
+					"name": "listener_0",
+					"address": {
+						"socket_address": {
+							"address": "127.0.0.1",
+							"port_value": 10000
+						}
+					},
+					"filter_chains": {
+						"filters": {
+							"name": "envoy.filters.network.http_connection_manager",
+							"typed_config": {
+								"@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+								"stat_prefix": "ingress_http",
+								"codec_type": "AUTO",
+								"route_config": {
+									"name": "local_route",
+									"virtual_hosts": {
+										"name": "local_service",
+										"domains": [
+											"*"
+										],
+										"routes": {
+											"match": {
+												"prefix": "/"
+											},
+											"route": {
+												"cluster": "some_service",
+												"host_rewrite_path_regex": {
+													"pattern": {
+														"google_re2": {},
+														"regex": "^/.+/(.+)$"
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				},
+				"clusters": {
+					"name": "some_service",
+					"connect_timeout": "0.25s",
+					"type": "STATIC",
+					"lb_policy": "ROUND_ROBIN",
+					"load_assignment": {
+						"cluster_name": "some_service",
+						"endpoints": {
+							"lb_endpoints": {
+								"endpoint": {
+									"address": {
+										"socket_address": {
+											"address": "127.0.0.1",
+											"port_value": 1234
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		`
+
+		testEnvoyConfig(ctx, t, config, versions)
+	})
+}
+
 func testEnvoyConfig(
 	ctx context.Context,
 	t *testing.T,
 	config string,
 	versions []string,
 ) {
-	// so, quick note on the general idea here:
-	//
-	// - there should be a set of tags to be tested against. That probably should
-	// be predetermined: that may not be the "final version" of this, but that'd
-	// be a functional starting point.
-	//
-	// - For each test / version, perform a discrete test w/ appropriate labelling
-	// and faulting.
-
 	for _, v := range versions {
-		t.Run(v, func(t *testing.T) {
-			// so - in here, execute a docker image, get the resulting code & stdout/err,
-			// print the latter if there's an error an return a fatal.
+		t.Run("version="+v, func(t *testing.T) {
+
+			// note [bs]: not sure this is quite flexible enough. Particularly I do
+			// want to be able to inject errors; this doesn't allow that.
+			err := execEnvoy(ctx, config, v)
+			if err != nil {
+				t.Fatalf("Failure in config validation test: %s", err)
+			}
 		})
 	}
 }
@@ -86,7 +192,9 @@ func execEnvoy(
 			),
 			WaitingFor: wait.ForExit(),
 
-			Cmd: []string{"envoy", "--mode", "validate", "--config-path", "/tmp/config.json"},
+			// Cmd: []string{"envoy", "--mode", "validate", "--config-path", "/tmp/config.json"},
+			Cmd: []string{"bash", "-c",
+				"envoy --mode validate --config-path /tmp/config.json"},
 		},
 		Started: true,
 	})
