@@ -3,75 +3,146 @@ package containertest
 import (
 	"context"
 	"fmt"
-	"net/http"
+	"io"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func TestEnvoy(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-
-	ctx := context.Background()
-	var _ = ctx
-
-}
-
-func TestWithNginx(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-
+func TestEnvoyConfig(t *testing.T) {
 	ctx := context.Background()
 
-	nginxC, err := setupNginx(ctx)
-	if err != nil {
-
-		t.Fatal(err)
-	}
-
-	// Clean up the container after the test is complete
-	defer nginxC.Terminate(ctx)
-
-	resp, err := http.Get(nginxC.URI)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Expected status code %d. Got %d.", http.StatusOK, resp.StatusCode)
-	}
-}
-
-type nginxContainer struct {
-	testcontainers.Container
-	URI string
-}
-
-func setupNginx(ctx context.Context) (*nginxContainer, error) {
-	req := testcontainers.ContainerRequest{
-		Image:        "nginx",
-		ExposedPorts: []string{"80/tcp"},
-		WaitingFor:   wait.ForHTTP("/"),
-	}
-	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
+	t.Run("ValidConfig", func(t *testing.T) {
+		config := `
+		{}
+		`
+		err := execEnvoy(ctx, config, "v1.24.0")
+		if err != nil {
+			t.Fatalf("Unexpected failure on config: %s [config='%s']", err, config)
+		}
 	})
+
+	t.Run("InvalidConfig", func(t *testing.T) {
+		config := `
+		{
+		`
+		err := execEnvoy(ctx, config, "v1.24.0")
+		if err == nil {
+			t.Fatalf("Expected failure on config, got none [config='%s']", config)
+		}
+	})
+}
+
+func testEnvoyConfig(
+	ctx context.Context,
+	t *testing.T,
+	config string,
+	versions []string,
+) {
+	// so, quick note on the general idea here:
+	//
+	// - there should be a set of tags to be tested against. That probably should
+	// be predetermined: that may not be the "final version" of this, but that'd
+	// be a functional starting point.
+	//
+	// - For each test / version, perform a discrete test w/ appropriate labelling
+	// and faulting.
+
+	for _, v := range versions {
+		t.Run(v, func(t *testing.T) {
+			// so - in here, execute a docker image, get the resulting code & stdout/err,
+			// print the latter if there's an error an return a fatal.
+		})
+	}
+}
+
+const envoyImage = "envoyproxy/envoy"
+
+func execEnvoy(
+	ctx context.Context,
+	config string,
+	version string,
+) error {
+	// todo [bs]: think about the deadline, esp given the trickiness of handling
+	// long image pulls vs unexpected hangs.
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	configFile, configFileErr := createTmpConfig(config)
+	if configFileErr != nil {
+		return configFileErr
+	}
+	defer os.Remove(configFile.Name())
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image: fmt.Sprintf("%s:%s", envoyImage, version),
+			Mounts: testcontainers.Mounts(
+				testcontainers.BindMount(configFile.Name(), "/tmp/config.json"),
+			),
+			WaitingFor: wait.ForExit(),
+
+			Cmd: []string{"envoy", "--mode", "validate", "--config-path", "/tmp/config.json"},
+		},
+		Started: true,
+	})
+	defer container.Terminate(ctx)
+
+	logs, err := getLogs(ctx, container)
 	if err != nil {
-		return nil, fmt.Errorf("Could not create container: %s", err)
+		return fmt.Errorf("Could not retrieve logs: %w", err)
+	}
+	// note [bs]: eventually logs should only be packaged in the error, but for now
+	// I anticipate this being a handy big of debug.
+	fmt.Println("Logs: ", logs)
+
+	// note [bs]: temporary way to detect errors - status codes would be more
+	// reliable, and will be done in a later revision.
+	if strings.Contains(logs, "error") {
+		return fmt.Errorf("Error encountered in config: %s", logs)
 	}
 
-	ip, err := container.Host(ctx)
+	// alright, so in here I want to analyze the container return and potentially
+	// return an error.
+
+	// so - I think I most likely want to change strategy here to this:
+	//
+	// - Spin up a series of containers for each relevant tag.
+
+	// container.Exec()
+
+	return nil
+}
+
+func getLogs(ctx context.Context, container testcontainers.Container) (string, error) {
+	logs, err := container.Logs(ctx)
 	if err != nil {
-		return nil, err
+		return "", fmt.Errorf("Could not retrieve logs: %w", err)
 	}
 
-	mappedPort, err := container.MappedPort(ctx, "80")
-	if err != nil {
-		return nil, err
+	buf := new(strings.Builder)
+	_, copyErr := io.Copy(buf, logs)
+	if copyErr != nil {
+		return "", copyErr
 	}
+	return buf.String(), nil
+}
 
-	uri := fmt.Sprintf("http://%s:%s", ip, mappedPort.Port())
-
-	return &nginxContainer{Container: container, URI: uri}, nil
+func createTmpConfig(content string) (file *os.File, err error) {
+	tmpFile, tmpFileErr := os.CreateTemp("", "tmp-config.json")
+	if tmpFileErr != nil {
+		return nil, fmt.Errorf("Failed to create config file: %w", tmpFileErr)
+	}
+	_, writeErr := tmpFile.WriteString(content)
+	if writeErr != nil {
+		return nil, fmt.Errorf("Failed to write config to file: %w", writeErr)
+	}
+	if err := tmpFile.Sync(); err != nil {
+		return nil, fmt.Errorf("Failed to write config to file: %w", err)
+	}
+	return tmpFile, nil
 }
