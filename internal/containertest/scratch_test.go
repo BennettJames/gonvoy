@@ -13,30 +13,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func TestEnvoyConfig(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("ValidConfig", func(t *testing.T) {
-		config := `
-		{}
-		`
-		err := execEnvoy(ctx, config, "v1.24.0")
-		if err != nil {
-			t.Fatalf("Unexpected failure on config: %s [config='%s']", err, config)
-		}
-	})
-
-	t.Run("InvalidConfig", func(t *testing.T) {
-		config := `
-		{
-		`
-		err := execEnvoy(ctx, config, "v1.24.0")
-		if err == nil {
-			t.Fatalf("Expected failure on config, got none [config='%s']", config)
-		}
-	})
-}
-
 func TestEnvoyConfigMultiVersion(t *testing.T) {
 	ctx := context.Background()
 
@@ -62,8 +38,6 @@ func TestEnvoyConfigMultiVersion(t *testing.T) {
 	// "google_re2": {},
 
 	t.Run("Regex", func(t *testing.T) {
-		// RegexMatcher
-
 		config := `
 		{
 			"admin": {
@@ -191,10 +165,7 @@ func execEnvoy(
 				testcontainers.BindMount(configFile.Name(), "/tmp/config.json"),
 			),
 			WaitingFor: wait.ForExit(),
-
-			// Cmd: []string{"envoy", "--mode", "validate", "--config-path", "/tmp/config.json"},
-			Cmd: []string{"bash", "-c",
-				"envoy --mode validate --config-path /tmp/config.json"},
+			Cmd:        []string{"bash", "-c", "envoy --mode validate --config-path /tmp/config.json"},
 		},
 		Started: true,
 	})
@@ -250,6 +221,9 @@ func createTmpConfig(content string) (file *os.File, err error) {
 		return nil, fmt.Errorf("Failed to write config to file: %w", writeErr)
 	}
 	if err := tmpFile.Sync(); err != nil {
+		return nil, fmt.Errorf("Failed to write config to file: %w", err)
+	}
+	if err := os.Chmod(tmpFile.Name(), 0666); err != nil {
 		return nil, fmt.Errorf("Failed to write config to file: %w", err)
 	}
 	return tmpFile, nil
